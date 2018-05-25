@@ -1,4 +1,4 @@
 {
   "snapshot_csv":"/home/ubuntu/src/eostoolkit/eos_validator/snapshot_test.csv",
-  "nodeosd_host":"http://127.0.0.1:38888"
+  "nodeosd_host":"127.0.0.1:38888"
 }
