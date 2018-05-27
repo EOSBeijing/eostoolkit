@@ -30,3 +30,12 @@ nodeosd_host: ip:host for the noedeosd ip and http port, for example 127.0.0.1:8
 ```
 python eos_onchain_validator.py --action chain_validate --config validator.json
 ```
+
+### Others
+ - The validation of snapshot.cvs
+    - this can be done by query the ETH fullnode, and it need to build the fullnode by yourself. I prefer to use the version which get the most consensus from the community.
+
+
+### TODO:
+ - find another way to decrease HTTP request times. 
+    - keepalive to nodeosd has been tried, nodeosd will close the conntection
