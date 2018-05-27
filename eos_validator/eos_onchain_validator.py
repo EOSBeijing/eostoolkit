@@ -46,7 +46,7 @@ def check_balance_signal_account(param):
         if pub_key != owner_pubkey:
             print 'ERROR: account %s snapshot pubkey(%s)!=onchain pubkey(%s)' % (account_name, pub_key, owner_pubkey)
             return signal_onchain_amount
-        net_delegated, cpu_delegated, balance = 0, 0, get_onchain_balance(account_name, node_host)
+        net_delegated, cpu_delegated = 0, 0
         if account_info['delegated_bandwidth']:
             net_delegated, cpu_delegated = token_str2_float(account_info['delegated_bandwidth']['net_weight']), token_str2_float(account_info['delegated_bandwidth']['cpu_weight'])
 
@@ -69,28 +69,30 @@ def check_balance_signal_account(param):
         print traceback.print_exc()
         return signal_onchain_amount
 
-def check_balance(node_host, snapshot_csv):
+def check_balance(conf_dict, process_pool, cpu_count):
+    node_host, snapshot_csv = conf_dict['nodeosd_host'], conf_dict['snapshot_csv']
     EOS_TOTAL = 1000000000.0000
-    account_onchain_balance_total = 0.0
-    cpu_count = multiprocessing.cpu_count()
-    process_pool = multiprocessing.Pool(processes=cpu_count)
-
+    account_onchain_balance_total, batch_size = 0.0, cpu_count*100
     try:
         with open(snapshot_csv, 'r') as fp:
-            batch_lines = []
+            batch_lines, cur_len, line_nu = [None] * batch_size, 0, 0
             for line in fp.readlines():
                 _, account_name, pub_key, snapshot_balance = line.replace('"','').split(',')
-                batch_lines.append((node_host, account_name, pub_key, float(snapshot_balance)))
-                if len(batch_lines)<cpu_count*100:
+                batch_lines[cur_len] = (node_host, account_name, pub_key, float(snapshot_balance))
+                cur_len += 1
+                line_nu += 1
+                if cur_len<batch_size:
                     continue
                 results = process_pool.map(check_balance_signal_account, batch_lines, cpu_count)
                 for signal_onchain_amount in results:
                     if signal_onchain_amount < 0:
                         return False
                     account_onchain_balance_total += signal_onchain_amount
-                batch_lines = []
-            if batch_lines:
-                results = process_pool.map(check_balance_signal_account, batch_lines, cpu_count)
+                print 'check progress, line number:', line_nu
+                batch_lines, cur_len = [None] * batch_size, 0
+
+            if cur_len>0:
+                results = process_pool.map(check_balance_signal_account, batch_lines[:cur_len], cpu_count)
                 for signal_onchain_amount in results:
                     if signal_onchain_amount < 0:
                         return False
@@ -105,22 +107,18 @@ def check_balance(node_host, snapshot_csv):
         print 'EXCEPTION: there are exception:', e
         print traceback.print_exc()
         return False
-    finally:
-        process_pool.close()
-        process_pool.join()
         
-def check_snapshot():
+def check_contract():
     pass
-
 
 def main():
     parser = argparse.ArgumentParser(description='EOSIO onchain validator tool.')
-    parser.add_argument('--action', type=str, required=True, help='snapshot_validate|chain_validate')
+    parser.add_argument('--action', type=str, required=True, help='contract_validate|chain_validate')
     parser.add_argument('--config', type=str, required=True, help='validator.json config file path')
     args = parser.parse_args()
     action, conf_file = args.action, os.path.abspath(os.path.expanduser(args.config))
-    if action not in ('snapshot_validate', 'chain_validate'):
-        print 'ERROR: action should be one of snapshot_validate|chain_validate'
+    if action not in ('contract_validate', 'chain_validate'):
+        print 'ERROR: action should be one of contract_validate|chain_validate'
         sys.exit(1)
     if not os.path.isfile(conf_file):
         print 'ERROR: validator config file not exist:',conf_file
@@ -132,26 +130,34 @@ def main():
         print 'ERROR: validator config can not be empty:',conf_file
         sys.exit(1)
 
-    if action == 'snapshot_validate':
-        if not check_snapshot():
-            print 'ERROR: !!! The Snapshot Check FAILED !!!'
-            sys.exit(1)
-        else:
-            print 'SUCCESS: !!! The Snapshot Check SUCCESS !!!'
-            sys.exit(1)
-
-    if action == 'chain_validate':
-        TEST_TIME, i = 1000, 0
-        time_start = time.time()
-        while i < TEST_TIME:
-            i += 1
-            if not check_balance(conf_dict['nodeosd_host'], conf_dict['snapshot_csv']):
-                print 'ERROR: !!! The Balance Onchain Check FAILED !!!'
+    cpu_count = multiprocessing.cpu_count()
+    process_pool = multiprocessing.Pool(processes=cpu_count)
+    try:
+        if action == 'contract_validate':
+            if not check_contract():
+                print 'ERROR: !!! The Contract Check FAILED !!!'
                 sys.exit(1)
             else:
-                print 'SUCCESS: !!! The Balance Onchain Check SUCCESS !!!', i
-        time_usage = time.time()-time_start
-        print 'TESTING TIME USAGE:%fs, %f/s accounts' % (time_usage, TEST_TIME*5/time_usage)
+                print 'SUCCESS: !!! The Contract Check SUCCESS !!!'
+                sys.exit(1)
+        if action == 'chain_validate':
+            TEST_TIME, i = 100, 0
+            time_start = time.time()
+            while i < TEST_TIME:
+                i += 1
+                if not check_balance(conf_dict, process_pool, cpu_count):
+                    print 'ERROR: !!! The Balance Onchain Check FAILED !!!'
+                    sys.exit(1)
+                else:
+                    print 'SUCCESS: !!! The Balance Onchain Check SUCCESS !!!', i
+            time_usage = time.time()-time_start
+            print 'TESTING TIME USAGE:%fs, %f/s accounts' % (time_usage, TEST_TIME*5/time_usage)
+    except Exception as e:
+        print action, ' get exception:', e
+        print traceback.print_exc()
+    finally:
+        process_pool.close()
+        process_pool.join()
 
 if __name__ == '__main__':
     main()
