@@ -61,8 +61,10 @@ def check_balance_signal_account(param):
         if abs(snapshot_balance - onchain_balance) > 0.0001:
             print 'ERROR: account %s snapshot_balance(%f) != onchain_balance(%f)' % (account_name, snapshot_balance, onchain_balance)
             return signal_onchain_amount
-        #print '%s balance:%f net_delegated:%f cpu_delegated:%f onchain_balance:%f snapshot_balance:%f' % (account_name, balance, net_delegated, cpu_delegated, onchain_balance, snapshot_balance)
-        signal_onchain_amount = onchain_balance
+        #print '%s balance:%f net_delegated:%f cpu_delegated:%f onchain_balance:%f snapshot_balance:%f' % (account_name, balance, 
+        #            net_delegated, cpu_delegated, onchain_balance, snapshot_balance)
+        net_weight, cpu_weight = float(account_info['net_weight'])/10000.0, float(account_info['cpu_weight'])/10000.0
+        signal_onchain_amount = balance + net_weight + cpu_weight
         return signal_onchain_amount
     except Exception as e:
         print 'check_balance_signal_account get exception:', e
@@ -88,7 +90,7 @@ def check_balance(conf_dict, process_pool, cpu_count):
                     if signal_onchain_amount < 0:
                         return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
-                print 'check progress, line number:', line_nu
+                print 'check progress, line number:', line_nu, ' common accounts balance:', account_onchain_balance_total
                 batch_lines, cur_len = [None] * batch_size, 0
 
             if cur_len>0:
@@ -97,10 +99,13 @@ def check_balance(conf_dict, process_pool, cpu_count):
                     if signal_onchain_amount < 0:
                         return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
-            eosio_onchain_balance = get_onchain_balance('eosio', node_host)
-            print 'eosio_onchain_balance:', eosio_onchain_balance, ' account_onchain_balance_total:', account_onchain_balance_total
-            if abs(EOS_TOTAL - eosio_onchain_balance - account_onchain_balance_total) > 0.0001:
-                print 'ERROR: There are some illegal transfer token action EOS_TOTAL(%f) != onchain_total(%f)' % (EOS_TOTAL, (eosio_onchain_balance + account_onchain_balance_total))
+            sys_accounts, sys_accounts_map = ('eosio','eosio.ramfee','eosio.ram'), {}
+            for sacc in sys_accounts:
+                sys_accounts_map[sacc] = get_onchain_balance(sacc, node_host)
+            print 'Onchain: system accounts balance:', sys_accounts_map, ' common accounts balance:', account_onchain_balance_total
+            onchain_account_balance = sum(sys_accounts_map.values()) + account_onchain_balance_total
+            if abs(EOS_TOTAL - onchain_account_balance) > 0.0001:
+                print 'ERROR: There are some illegal transfer token action EOS_TOTAL(%f) != onchain_total(%f)' % (EOS_TOTAL, onchain_account_balance)
                 return False, line_nu
             return True, line_nu
     except Exception as e:
