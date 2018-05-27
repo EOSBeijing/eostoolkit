@@ -86,7 +86,7 @@ def check_balance(conf_dict, process_pool, cpu_count):
                 results = process_pool.map(check_balance_signal_account, batch_lines, cpu_count)
                 for signal_onchain_amount in results:
                     if signal_onchain_amount < 0:
-                        return False
+                        return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
                 print 'check progress, line number:', line_nu
                 batch_lines, cur_len = [None] * batch_size, 0
@@ -95,18 +95,18 @@ def check_balance(conf_dict, process_pool, cpu_count):
                 results = process_pool.map(check_balance_signal_account, batch_lines[:cur_len], cpu_count)
                 for signal_onchain_amount in results:
                     if signal_onchain_amount < 0:
-                        return False
+                        return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
             eosio_onchain_balance = get_onchain_balance('eosio', node_host)
             print 'eosio_onchain_balance:', eosio_onchain_balance, ' account_onchain_balance_total:', account_onchain_balance_total
             if abs(EOS_TOTAL - eosio_onchain_balance - account_onchain_balance_total) > 0.0001:
                 print 'ERROR: There are some illegal transfer token action EOS_TOTAL(%f) != onchain_total(%f)' % (EOS_TOTAL, (eosio_onchain_balance + account_onchain_balance_total))
-                return False
-            return True
+                return False, line_nu
+            return True, line_nu
     except Exception as e:
         print 'EXCEPTION: there are exception:', e
         print traceback.print_exc()
-        return False
+        return False, 0
         
 def check_contract():
     pass
@@ -141,17 +141,16 @@ def main():
                 print 'SUCCESS: !!! The Contract Check SUCCESS !!!'
                 sys.exit(1)
         if action == 'chain_validate':
-            TEST_TIME, i = 100, 0
-            time_start = time.time()
-            while i < TEST_TIME:
+            i, time_start = 0, time.time()
+            while i < conf_dict['test_time']:
                 i += 1
-                if not check_balance(conf_dict, process_pool, cpu_count):
+                result, line_number = check_balance(conf_dict, process_pool, cpu_count)
+                if not result:
                     print 'ERROR: !!! The Balance Onchain Check FAILED !!!'
-                    sys.exit(1)
                 else:
-                    print 'SUCCESS: !!! The Balance Onchain Check SUCCESS !!!', i
+                    print 'SUCCESS: !!! The Balance Onchain Check SUCCESS !!!'
             time_usage = time.time()-time_start
-            print 'TESTING TIME USAGE:%fs, %f/s accounts' % (time_usage, TEST_TIME*5/time_usage)
+            print 'TIME USAGE:%fs, %f/s accounts' % (time_usage, conf_dict['test_time']*line_number/time_usage)
     except Exception as e:
         print action, ' get exception:', e
         print traceback.print_exc()
