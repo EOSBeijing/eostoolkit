@@ -1,12 +1,15 @@
-
-
-
 {
   "snapshot_csv":"/home/ubuntu/src/eostoolkit/eos_validator/snapshot_test_5k.csv",
   "nodeosd_host":"127.0.0.1:10017",
-  "test_time":10,
+  "test_time":1,
   "eos_issued":2000000000.0000,
   "snapshot_lines":1001,
+  "eos-bios":{
+    "enable":true,
+    "boot_sequence":"/ipfs/QmYzxLMZa5FEHvn5WGcTq2jU7sLqRk5VMWESKsGVKhLy1d",
+    "my_discovery_file":"/data/eos/eosbios/stage15/my_discovery_file.yaml",
+    "seed_network_http_address":"http://stage12.testnets.eoscanada.com"
+  },
   "contracts":{
     "eosio.token":{
         "local_path":"/data/eos/selfdocker/contracts"

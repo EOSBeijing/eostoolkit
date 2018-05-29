@@ -4,6 +4,8 @@
 #### Requirements
 This tool use Python 2.7 and with several packages, install with: pip install --upgrade xxx
 ```
+pyyaml
+beautifulsoup4
 simplejson
 requests
 argparse

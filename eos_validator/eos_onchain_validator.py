@@ -6,16 +6,85 @@ import os
 import sys
 import time
 import json
+import yaml
 import requests
 import argparse
+import subprocess 
 import traceback
 import simplejson as json
 import multiprocessing
+from bs4 import BeautifulSoup
 
 requests.adapters.DEFAULT_RETRIES = 3
 
-def token_str2_float(token):
-    return float(token.split(" ")[0])
+############################################
+#             EOS-BIOS FUNCS               #
+############################################
+def get_eosbios_producer_account(seed_network_http_address):
+        ret = requests.get(seed_network_http_address, timeout=6)
+        if ret.status_code/100 != 2:
+            print 'ERROR: failed to get producer account from:', seed_network_http_address
+            return False, None
+        producer_names = set()
+        soup = BeautifulSoup(ret.text, 'html.parser')
+        plist = soup.find_all('p')
+        for line in plist:
+            if 'Account:' not in str(line):
+                continue
+            pname = line.strong.text
+            if len(pname) != 12:
+                print 'ERROR: get illegal producer name len<12:', pname
+                return False, None
+            producer_names.add(pname)
+        return True, producer_names
+
+def get_eosbios_account(conf_dict):
+    conf_dict['sys_accounts'] = set(['eosio','eosio.ramfee','eosio.ram','eosio.unregd'])
+    conf_dict['producer_names'] = set()
+    if 'eos-bios' not in conf_dict or not conf_dict['eos-bios']['enable']:
+        return
+    if not os.path.isfile(conf_dict['eos-bios']['my_discovery_file']):
+        print 'ERROR: eos-bios my_discovery_file file not exist:',conf_dict['eos-bios']['my_discovery_file']
+        sys.exit(1)
+    boot_sequence_file = "/tmp/"+str(time.time())
+    wget_cmd = "wget -O %s https://ipfs.io%s" % (boot_sequence_file, conf_dict['eos-bios']['boot_sequence'])
+    ret = subprocess.call(wget_cmd, shell=True)
+    if ret != 0:
+        print 'ERROR: Failed to get boot_sequence file:',wget_cmd
+        sys.exit(1)
+    # Get the create account in the BOOT SEQUENCE FILE
+    eosbios_conf = None
+    with open(boot_sequence_file, 'r') as fp:
+        eosbios_conf = yaml.load(fp)
+    if not eosbios_conf:
+        print 'ERROR: Failed to load the boot_sequence file'
+        sys.exit(1)
+    
+    for opt in eosbios_conf['boot_sequence']:
+        if opt['op'] != 'system.newaccount': 
+            continue
+        if opt['data']['new_account'] and opt['data']['new_account'] not in ('b1', 'eosio.stake','eosio.bpay','eosio.vpay'):
+            conf_dict['sys_accounts'].add(opt['data']['new_account'])
+    print 'Get ', len(conf_dict['sys_accounts']), ' system accounts from boot sequence file:', conf_dict['sys_accounts']
+
+    # Get the producer account from blockchain
+    ret, conf_dict['producer_names'] = get_eosbios_producer_account(conf_dict['eos-bios']['seed_network_http_address'])
+    if not ret:
+        print 'Failed to get producer names'
+        sys.exit(1)
+    print 'Get ', len(conf_dict['producer_names']), ' producer account from chain:', conf_dict['producer_names']
+
+
+############################################
+#        Onchain Validation FUNCS          #
+############################################
+def token_str2float(token):
+    num = float(token.split(" ")[0])
+    return num if num > 0 else 0
+
+def weight_str2float(weight):
+    num = float(weight)
+    return num/10000.0 if num > 0 else 0
 
 def get_onchain_balance(account_name, node_host):
         body = {'scope':account_name, 'code':'eosio.token', 'table':'accounts', 'json':True}
@@ -27,7 +96,7 @@ def get_onchain_balance(account_name, node_host):
         balance = 0.0
         if balance_info['rows']:
             # {"rows":[{"balance":"804148103.4130 SYS"}],"more":false}
-            balance = token_str2_float(balance_info['rows'][0]['balance'])
+            balance = token_str2float(balance_info['rows'][0]['balance'])
         return balance
 
 def check_balance_signal_account(param):
@@ -40,15 +109,9 @@ def check_balance_signal_account(param):
             print 'ERROR: failed to call get_account for:', account_name, ret.text
             return signal_onchain_amount
         account_info = json.loads(ret.text)
-        owner_pubkey = account_info['permissions'][0]['required_auth']['keys'][0]['key']
-
-        # Validate the public key onchain whether same with the snapshot
-        if pub_key != owner_pubkey:
-            print 'ERROR: account %s snapshot pubkey(%s)!=onchain pubkey(%s)' % (account_name, pub_key, owner_pubkey)
-            return signal_onchain_amount
         net_delegated, cpu_delegated = 0, 0
         if account_info['delegated_bandwidth']:
-            net_delegated, cpu_delegated = token_str2_float(account_info['delegated_bandwidth']['net_weight']), token_str2_float(account_info['delegated_bandwidth']['cpu_weight'])
+            net_delegated, cpu_delegated = token_str2float(account_info['delegated_bandwidth']['net_weight']), token_str2float(account_info['delegated_bandwidth']['cpu_weight'])
 
         # call get account balance
         balance = get_onchain_balance(account_name, node_host)
@@ -61,9 +124,9 @@ def check_balance_signal_account(param):
         if abs(snapshot_balance - onchain_balance) > 0.0001:
             print 'ERROR: account %s snapshot_balance(%f) != onchain_balance(%f)' % (account_name, snapshot_balance, onchain_balance)
             return signal_onchain_amount
-        print '%s balance:%f net_delegated:%f cpu_delegated:%f onchain_balance:%f snapshot_balance:%f' % (account_name, balance, 
-                    net_delegated, cpu_delegated, onchain_balance, snapshot_balance)
-        net_weight, cpu_weight = float(account_info['net_weight'])/10000.0, float(account_info['cpu_weight'])/10000.0
+        #print '%s balance:%f net_delegated:%f cpu_delegated:%f onchain_balance:%f snapshot_balance:%f' % (account_name, balance, 
+        #            net_delegated, cpu_delegated, onchain_balance, snapshot_balance)
+        net_weight, cpu_weight = weight_str2float(account_info['net_weight']), weight_str2float(account_info['cpu_weight'])
         signal_onchain_amount = balance + net_weight + cpu_weight
         return signal_onchain_amount
     except Exception as e:
@@ -71,6 +134,44 @@ def check_balance_signal_account(param):
         print traceback.print_exc()
         return signal_onchain_amount
 
+def get_sys_producer_balance_account(node_host, account_name):
+    onchain_amount = 0
+    try:
+        # call get account
+        ret = requests.post("http://%s/v1/chain/get_account" % node_host, data=json.dumps({'account_name':account_name}), timeout=2)
+        if ret.status_code/100 != 2:
+            print 'WARNING: failed to call get_account for:', account_name
+            return onchain_amount
+        account_info = json.loads(ret.text)
+        net_delegated, cpu_delegated = 0, 0
+        if account_info['delegated_bandwidth']:
+            net_delegated, cpu_delegated = token_str2float(account_info['delegated_bandwidth']['net_weight']), token_str2float(account_info['delegated_bandwidth']['cpu_weight'])
+
+        # call get account balance
+        balance = get_onchain_balance(account_name, node_host)
+        if balance < 0:
+            print 'ERROR: failed to call get_table_rows accounts for:', account_name, ret.text
+            return onchain_amount
+
+        net_weight, cpu_weight = weight_str2float(account_info['net_weight']), weight_str2float(account_info['cpu_weight'])
+        print '%s balance:%f net_delegated:%f cpu_delegated:%f net_weight:%f cpu_weight:%f onchain_amount:%f' % (account_name, balance, 
+                    net_delegated, cpu_delegated, net_weight, cpu_weight, (balance+net_delegated+cpu_delegated))
+        onchain_amount = balance + net_weight + cpu_weight
+        return onchain_amount
+    except Exception as e:
+        print 'get_sys_producer_balance_account get exception:', e
+        print traceback.print_exc()
+        return onchain_amount
+
+def get_sys_producer_balances(conf_dict):
+    conf_dict['sys_producer_amount'] = {}
+    for key in ('sys_accounts','producer_names'):
+        for acct in conf_dict[key]:
+            conf_dict['sys_producer_amount'][acct] = get_sys_producer_balance_account(conf_dict['nodeosd_host'],acct)
+
+############################################
+#        Validate Onchain Balance          #
+############################################
 def check_balance(conf_dict, process_pool, cpu_count):
     node_host, snapshot_csv = conf_dict['nodeosd_host'], conf_dict['snapshot_csv']
     account_onchain_balance_total, batch_size = 0.0, cpu_count*100
@@ -101,11 +202,8 @@ def check_balance(conf_dict, process_pool, cpu_count):
                     if signal_onchain_amount < 0:
                         return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
-            sys_accounts, sys_accounts_map = ('eosio','eosio.ramfee','eosio.ram','eosio.unregd'), {}
-            for sacc in sys_accounts:
-                sys_accounts_map[sacc] = get_onchain_balance(sacc, node_host)
-            print 'Onchain: system accounts balance:', sys_accounts_map, ' common accounts balance:', account_onchain_balance_total, ' line_nu:', line_nu
-            onchain_account_balance = sum(sys_accounts_map.values()) + account_onchain_balance_total
+            print 'Onchain: system&producer accounts balance:', conf_dict['sys_producer_amount'], ' common accounts balance:', account_onchain_balance_total, ' line_nu:', line_nu
+            onchain_account_balance = sum(conf_dict['sys_producer_amount'].values()) + account_onchain_balance_total
             if abs(conf_dict['eos_issued'] - onchain_account_balance) > 0.0001:
                 print 'ERROR: There are some illegal transfer token action eos_issued(%f) != onchain_total(%f) anonymous amount:%f' % (conf_dict['eos_issued'], onchain_account_balance, conf_dict['eos_issued']-onchain_account_balance)
                 return False, line_nu
@@ -114,9 +212,16 @@ def check_balance(conf_dict, process_pool, cpu_count):
         print 'EXCEPTION: there are exception:', e
         print traceback.print_exc()
         return False, 0
-        
+
+
+############################################
+#        Validate Onchain Contract         #
+############################################
 def check_contract():
     pass
+
+####################################################################
+
 
 def main():
     parser = argparse.ArgumentParser(description='EOSIO onchain validator tool.')
@@ -124,6 +229,7 @@ def main():
     parser.add_argument('--config', type=str, required=True, help='validator.json config file path')
     args = parser.parse_args()
     action, conf_file = args.action, os.path.abspath(os.path.expanduser(args.config))
+    # Check the parameters
     if action not in ('contract_validate', 'chain_validate'):
         print 'ERROR: action should be one of contract_validate|chain_validate'
         sys.exit(1)
@@ -136,7 +242,10 @@ def main():
     if not conf_dict:
         print 'ERROR: validator config can not be empty:',conf_file
         sys.exit(1)
-
+    get_eosbios_account(conf_dict)
+    get_sys_producer_balances(conf_dict)
+    
+    # Start the validation
     cpu_count = multiprocessing.cpu_count()
     process_pool = multiprocessing.Pool(processes=cpu_count)
     try:
