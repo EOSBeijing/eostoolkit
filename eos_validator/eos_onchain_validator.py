@@ -61,8 +61,8 @@ def check_balance_signal_account(param):
         if abs(snapshot_balance - onchain_balance) > 0.0001:
             print 'ERROR: account %s snapshot_balance(%f) != onchain_balance(%f)' % (account_name, snapshot_balance, onchain_balance)
             return signal_onchain_amount
-        #print '%s balance:%f net_delegated:%f cpu_delegated:%f onchain_balance:%f snapshot_balance:%f' % (account_name, balance, 
-        #            net_delegated, cpu_delegated, onchain_balance, snapshot_balance)
+        print '%s balance:%f net_delegated:%f cpu_delegated:%f onchain_balance:%f snapshot_balance:%f' % (account_name, balance, 
+                    net_delegated, cpu_delegated, onchain_balance, snapshot_balance)
         net_weight, cpu_weight = float(account_info['net_weight'])/10000.0, float(account_info['cpu_weight'])/10000.0
         signal_onchain_amount = balance + net_weight + cpu_weight
         return signal_onchain_amount
@@ -73,7 +73,6 @@ def check_balance_signal_account(param):
 
 def check_balance(conf_dict, process_pool, cpu_count):
     node_host, snapshot_csv = conf_dict['nodeosd_host'], conf_dict['snapshot_csv']
-    EOS_TOTAL = 1000000000.0000
     account_onchain_balance_total, batch_size = 0.0, cpu_count*100
     try:
         with open(snapshot_csv, 'r') as fp:
@@ -83,6 +82,9 @@ def check_balance(conf_dict, process_pool, cpu_count):
                 batch_lines[cur_len] = (node_host, account_name, pub_key, float(snapshot_balance))
                 cur_len += 1
                 line_nu += 1
+                if conf_dict['snapshot_lines']>0 and line_nu>=conf_dict['snapshot_lines']:
+                    print 'Stop validate because snapshot_lines was set to:', conf_dict['snapshot_lines']
+                    break
                 if cur_len<batch_size:
                     continue
                 results = process_pool.map(check_balance_signal_account, batch_lines, cpu_count)
@@ -99,13 +101,13 @@ def check_balance(conf_dict, process_pool, cpu_count):
                     if signal_onchain_amount < 0:
                         return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
-            sys_accounts, sys_accounts_map = ('eosio','eosio.ramfee','eosio.ram'), {}
+            sys_accounts, sys_accounts_map = ('eosio','eosio.ramfee','eosio.ram','eosio.unregd'), {}
             for sacc in sys_accounts:
                 sys_accounts_map[sacc] = get_onchain_balance(sacc, node_host)
-            print 'Onchain: system accounts balance:', sys_accounts_map, ' common accounts balance:', account_onchain_balance_total
+            print 'Onchain: system accounts balance:', sys_accounts_map, ' common accounts balance:', account_onchain_balance_total, ' line_nu:', line_nu
             onchain_account_balance = sum(sys_accounts_map.values()) + account_onchain_balance_total
-            if abs(EOS_TOTAL - onchain_account_balance) > 0.0001:
-                print 'ERROR: There are some illegal transfer token action EOS_TOTAL(%f) != onchain_total(%f)' % (EOS_TOTAL, onchain_account_balance)
+            if abs(conf_dict['eos_issued'] - onchain_account_balance) > 0.0001:
+                print 'ERROR: There are some illegal transfer token action eos_issued(%f) != onchain_total(%f) anonymous amount:%f' % (conf_dict['eos_issued'], onchain_account_balance, conf_dict['eos_issued']-onchain_account_balance)
                 return False, line_nu
             return True, line_nu
     except Exception as e:
