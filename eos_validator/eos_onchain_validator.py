@@ -40,10 +40,9 @@ def get_eosbios_producer_account(seed_network_http_address):
         return True, producer_names
 
 def dl_files(conf_dict, disco_conf):
-    conf_dict['dlfiles'] = {}
     for file in disco_conf['target_contents']:
         tmpfile = os.path.join("/tmp/", str(time.time())+'_'+file['name'])
-        wget_cmd = "wget -O %s https://ipfs.io%s" % (tmpfile, file['ref'])
+        wget_cmd = "wget -O %s https://ipfs.io%s > /dev/null 2>&1" % (tmpfile, file['ref'])
         ret = subprocess.call(wget_cmd, shell=True)
         if ret != 0:
             print 'ERROR: Failed to get file:',wget_cmd
@@ -221,6 +220,9 @@ def get_sys_producer_balances(conf_dict):
 #        Validate Onchain Balance          #
 ############################################
 def check_balance(conf_dict, process_pool, cpu_count):
+    get_eosbios_account(conf_dict)
+    get_sys_producer_balances(conf_dict)
+
     node_host, snapshot_csv = conf_dict['nodeosd_host'], conf_dict['dlfiles']['snapshot.csv']
     account_onchain_balance_total, batch_size = Decimal(0.0), cpu_count*100
     try:
@@ -270,21 +272,41 @@ def check_balance(conf_dict, process_pool, cpu_count):
 ############################################
 #        Validate Onchain Contract         #
 ############################################
-def check_contract():
-    pass
+def check_contracts(conf_dict):
+    try:
+        for account_name in conf_dict["code_hash_compare"]["accounts"]:
+            cur_ret = requests.post("http://%s/v1/chain/get_code" % conf_dict['nodeosd_host'], data=json.dumps({'account_name':account_name}), timeout=5)
+            if cur_ret.status_code/100 != 2:
+                print 'ERROR: failed to call get_code for:', account_name, conf_dict['nodeosd_host'], ret.text
+                raise Exception("")
+            cur_code_info = json.loads(cur_ret.text)
+            compare_ret = requests.post("http://%s/v1/chain/get_code" % conf_dict['code_hash_compare']['nodeosd_host'], data=json.dumps({'account_name':account_name}), timeout=5)
+            if compare_ret.status_code/100 != 2:
+                print 'ERROR: failed to call get_code for:', account_name, conf_dict['code_hash_compare']['nodeosd_host'], compare_ret.text
+                raise Exception("")
+            compare_code_info = json.loads(compare_ret.text)
+            if cur_code_info['code_hash'] != compare_code_info['code_hash']:
+                print 'ERROR: code hash compare failed:', account_name, cur_code_info['code_hash'], compare_code_info['code_hash']
+                raise Exception("")
+            print account_name, cur_code_info['code_hash'], compare_code_info['code_hash']
+        print 'SUCCESS: !!! The Contracts Check SUCCESS !!!'
+        return True
+    except Exception as e:
+        print 'ERROR: !!! The Contracts Check FAILED !!!'
+        return False
 
 ####################################################################
 
 
 def main():
     parser = argparse.ArgumentParser(description='EOSIO onchain validator tool.')
-    parser.add_argument('--action', type=str, required=True, help='contract_validate|chain_validate')
+    parser.add_argument('--action', type=str, required=True, help='all|contract_validate|chain_validate')
     parser.add_argument('--config', type=str, required=True, help='validator.json config file path')
     args = parser.parse_args()
     action, conf_file = args.action, os.path.abspath(os.path.expanduser(args.config))
     # Check the parameters
-    if action not in ('contract_validate', 'chain_validate'):
-        print 'ERROR: action should be one of contract_validate|chain_validate'
+    if action not in ('all', 'contract_validate', 'chain_validate'):
+        print 'ERROR: action should be one of all|contract_validate|chain_validate'
         sys.exit(1)
     if not os.path.isfile(conf_file):
         print 'ERROR: validator config file not exist:',conf_file
@@ -295,31 +317,39 @@ def main():
     if not conf_dict:
         print 'ERROR: validator config can not be empty:',conf_file
         sys.exit(1)
-    get_eosbios_account(conf_dict)
-    get_sys_producer_balances(conf_dict)
+    conf_dict['dlfiles'] = {}
 
     # Start the validation
     cpu_count = multiprocessing.cpu_count()
     process_pool = multiprocessing.Pool(processes=cpu_count)
     try:
-        if action == 'contract_validate':
-            if not check_contract():
-                print 'ERROR: !!! The Contract Check FAILED !!!'
-                sys.exit(1)
+        if action == 'all':
+            if not check_contracts(conf_dict):
+                return False
+
+            time_start = time.time()
+            result, line_number = check_balance(conf_dict, process_pool, cpu_count)
+            if not result:
+                print 'ERROR: !!! The Balances Onchain Check FAILED !!!'
             else:
-                print 'SUCCESS: !!! The Contract Check SUCCESS !!!'
-                sys.exit(1)
-        if action == 'chain_validate':
-            i, time_start = 0, time.time()
-            while i < conf_dict['test_time']:
-                i += 1
-                result, line_number = check_balance(conf_dict, process_pool, cpu_count)
-                if not result:
-                    print 'ERROR: !!! The Balance Onchain Check FAILED !!!'
-                else:
-                    print 'SUCCESS: !!! The Balance Onchain Check SUCCESS !!!'
+                print 'SUCCESS: !!! The Balances Onchain Check SUCCESS !!!'
             time_usage = time.time()-time_start
-            print 'TIME USAGE:%ss, %s accounts/s ' % (time_usage, conf_dict['test_time']*line_number/time_usage)
+            print 'TIME USAGE:%ss, %s accounts/s ' % (time_usage, line_number/time_usage)
+            return result
+        elif action == 'contract_validate':
+            return check_contracts(conf_dict)
+
+        elif action == 'chain_validate':
+            time_start = time.time()
+            result, line_number = check_balance(conf_dict, process_pool, cpu_count)
+            if not result:
+                print 'ERROR: !!! The Balances Onchain Check FAILED !!!'
+            else:
+                print 'SUCCESS: !!! The Balances Onchain Check SUCCESS !!!'
+            time_usage = time.time()-time_start
+            print 'TIME USAGE:%ss, %s accounts/s ' % (time_usage, line_number/time_usage)
+            return result
+
     except Exception as e:
         print action, ' get exception:', e
         print traceback.print_exc()
@@ -330,4 +360,4 @@ def main():
             os.remove(conf_dict['dlfiles'][file])
 
 if __name__ == '__main__':
-    main()
+    sys.exit( 0 if main() else 1)

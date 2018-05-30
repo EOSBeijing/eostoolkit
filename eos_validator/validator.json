@@ -1,6 +1,5 @@
 {
   "nodeosd_host":"127.0.0.1:10020",
-  "test_time":1,
   "eos_issued":2000000000.0000,
   "snapshot_lines":1000,
   "eos-bios":{
@@ -9,15 +8,8 @@
     "my_discovery_file":"/data/eos/eosbios/stage16/my_discovery_file.yaml",
     "seed_network_http_address":"http://stage15.testnets.eoscanada.com"
   },
-  "contracts":{
-    "eosio.token":{
-        "local_path":"/data/eos/selfdocker/contracts"
-    },
-    "eosio.msig":{
-        "local_path":"/data/eos/selfdocker/contracts"
-    },
-    "bios_system":{
-        "local_path":"/data/eos/selfdocker/contracts"
-    }
+  "code_hash_compare":{
+    "nodeosd_host":"127.0.0.1:10016",
+    "accounts":["eosio","eosio.msig","eosio.token","eosio.ram","eosio.ramfee","eosio.stake","eosio.names","eosio.saving","eosio.bpay","eosio.vpay"]
   }
 }
