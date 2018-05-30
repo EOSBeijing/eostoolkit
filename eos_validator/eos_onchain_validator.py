@@ -104,6 +104,12 @@ def weight_str2float(weight):
     num = Decimal(weight)
     return num/Decimal(10000.0) if num > 0 else 0
 
+def check_account_privileged(account_info):
+    #Validate the privileged, ONLY (eosio、eosio.msig) can be privileged FOR NOW
+    if account_info['privileged']:
+        return account_info['account_name'] in ('eosio', 'eosio.msig')
+    return not account_info['account_name'] in ('eosio', 'eosio.msig')
+
 def get_onchain_balance(account_name, node_host):
         body = {'scope':account_name, 'code':'eosio.token', 'table':'accounts', 'json':True}
         ret = requests.post("http://%s/v1/chain/get_table_rows" % node_host, data=json.dumps(body), timeout=2)
@@ -127,6 +133,11 @@ def check_balance_signal_account(param):
             print 'ERROR: failed to call get_account for:', account_name, ret.text
             return signal_onchain_amount
         account_info = json.loads(ret.text)
+
+        # Validate the privileged
+        if not check_account_privileged(account_info):
+            print 'ERROR: account %s privileged check failed:', account_info
+            return signal_onchain_amount
 
         # Validate the public key onchain whether same with the snapshot
         owner_pubkey = account_info['permissions'][0]['required_auth']['keys'][0]['key']
@@ -169,6 +180,12 @@ def get_sys_producer_balance_account(node_host, account_name, account_type):
             print 'WARNING: failed to call get_account for:', account_name
             return onchain_amount
         account_info = json.loads(ret.text)
+
+        # Validate the privileged
+        if not check_account_privileged(account_info):
+            print 'ERROR: account %s privileged check failed:', account_info
+            return signal_onchain_amount
+        
         net_weight, cpu_weight = weight_str2float(account_info['net_weight']), weight_str2float(account_info['cpu_weight'])
 
         net_delegated, cpu_delegated = Decimal(0), Decimal(0)
