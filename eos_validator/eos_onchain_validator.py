@@ -185,9 +185,9 @@ def get_sys_producer_balance_account(node_host, account_name, account_type):
                     net_delegated, cpu_delegated, net_weight, cpu_weight, (balance+net_delegated+cpu_delegated))
 
         onchain_amount = balance + net_weight + cpu_weight
-        if account_type == 'producer_names':
+        #if account_type == 'producer_names':
             # eos-bios producers.enrich action use `issue` or `transfer` so here ignore the balance
-            onchain_amount = net_weight + cpu_weight
+        #    onchain_amount = net_weight + cpu_weight
         return onchain_amount
     except Exception as e:
         print 'get_sys_producer_balance_account get exception:', e
@@ -237,7 +237,7 @@ def check_balance(conf_dict, process_pool, cpu_count):
             sys_producer_balance = sum(conf_dict['sys_producer_amount'].values())
             print 'Onchain: system&producer accounts balance:',sys_producer_balance, 'common accounts balance:', account_onchain_balance_total, ' account number:', line_nu
             onchain_account_balance = sys_producer_balance + account_onchain_balance_total
-            anonymous_amount = Decimal(conf_dict['eos_issued']) - onchain_account_balance
+            anonymous_amount = Decimal(conf_dict['eos_issued']+len(conf_dict['producer_names'])*Decimal(10000000.0000)) - onchain_account_balance
             if abs(anonymous_amount) > Decimal(0.0001):
                 print 'ERROR: There are some illegal transfer token action eos_issued(%s) != onchain_total(%s) anonymous amount:%s' % (conf_dict['eos_issued'], onchain_account_balance, anonymous_amount)
                 return False, line_nu
