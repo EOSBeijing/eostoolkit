@@ -1,7 +1,7 @@
 {
-  "nodeosd_host":"127.0.0.1:10020",
-  "eos_issued":2000000000.0000,
+  "nodeosd_host":"127.0.0.1:10016",
   "snapshot_lines":1000,
+  "token_name":"EOS",
   "eos-bios":{
     "enable":true,
     "single_boot":false,

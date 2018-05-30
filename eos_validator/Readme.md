@@ -1,6 +1,16 @@
 # eos_onchain_validator.py 
 #### is used to validate the balances by the snapshot.cvs and the legitimacy of the contracts on EOSIO blockchain.
 
+### Theories:
+The validation balance legality is the simple formula:
+```
+    EOS_SUPPLY_AMMOUNT = account_balance + account_net_weight + account_cpu_weight
+```
+- compare the snapshot account's balance with the same account's onchain balance
+- compare the snapshot account's public key with the same account's active key
+- extra account was created the formula will false
+- check the extra system account by call /v1/history/get_controlled_accounts
+
 ### Feature:
 - Contracts validation
 - Account privilege check
@@ -32,7 +42,6 @@ optional arguments:
 ### validator.json 
 ```
 nodeosd_host: ip:host for the target network noedeosd ip and http port, for example 127.0.0.1:8888
-eos_issued: the amount of EOS token
 snapshot_lines: 0 means check all the accounts; >0 means the number of the accounts to check
 eos-bios.enable: true means the target network boosted by eos-bios
 eos-bios.single_boot: whether the target neteork is running by eos-bios boot --single

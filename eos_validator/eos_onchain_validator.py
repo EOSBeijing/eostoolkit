@@ -41,6 +41,9 @@ def get_eosbios_producer_account(seed_network_http_address):
 
 def dl_files(conf_dict, disco_conf):
     for file in disco_conf['target_contents']:
+        if file['name'] not in ('boot_sequence.yaml', 'snapshot.csv'):
+            continue
+        print 'downloading:', file['name']
         tmpfile = os.path.join("/tmp/", str(time.time())+'_'+file['name'])
         wget_cmd = "wget -O %s https://ipfs.io%s > /dev/null 2>&1" % (tmpfile, file['ref'])
         ret = subprocess.call(wget_cmd, shell=True)
@@ -50,7 +53,7 @@ def dl_files(conf_dict, disco_conf):
         conf_dict['dlfiles'][file['name']] = tmpfile
 
 def get_eosbios_account(conf_dict):
-    conf_dict['sys_accounts'] = set(['eosio','eosio.ramfee','eosio.ram','eosio.unregd'])
+    conf_dict['sys_accounts'] = set(['eosio','eosio.ramfee','eosio.ram','eosio.unregd','eosio.stake'])
     conf_dict['producer_names'] = set()
     if 'eos-bios' not in conf_dict or not conf_dict['eos-bios']['enable']:
         return
@@ -77,7 +80,7 @@ def get_eosbios_account(conf_dict):
     for opt in eosbios_conf['boot_sequence']:
         if opt['op'] != 'system.newaccount': 
             continue
-        if opt['data']['new_account'] and opt['data']['new_account'] not in ('b1','eosio.stake'):
+        if opt['data']['new_account'] and opt['data']['new_account'] not in ('b1',):
             conf_dict['sys_accounts'].add(opt['data']['new_account'])
     print 'Get ', len(conf_dict['sys_accounts']), ' system accounts from boot sequence file:', conf_dict['sys_accounts']
 
@@ -201,9 +204,6 @@ def get_sys_producer_balance_account(node_host, account_name, account_type):
                     net_delegated, cpu_delegated, net_weight, cpu_weight, (balance+net_delegated+cpu_delegated))
 
         onchain_amount = balance + net_weight + cpu_weight
-        #if account_type == 'producer_names':
-            # eos-bios producers.enrich action use `issue` or `transfer` so here ignore the balance
-        #    onchain_amount = net_weight + cpu_weight
         return onchain_amount
     except Exception as e:
         print 'get_sys_producer_balance_account get exception:', e
@@ -211,17 +211,60 @@ def get_sys_producer_balance_account(node_host, account_name, account_type):
         return onchain_amount
 
 def get_sys_producer_balances(conf_dict):
+    # Check whether there is other system account
+    conf_dict['eosio_descendant_account'] = set(conf_dict['sys_accounts'])
+    if not get_sys_account_servants(conf_dict):
+        print 'ERROR: failed to get the system accounts servants'
+        return False
+    other_account = conf_dict['eosio_descendant_account'] - conf_dict['sys_accounts']
+    if len(other_account)>0:
+        print 'ERROR: there are other system accounts:', ", ".join(other_account)
+        return False
+
     conf_dict['sys_producer_amount'] = {}
     for key in ('sys_accounts','producer_names'):
         for acct in conf_dict[key]:
+            if key == 'sys_accounts' and acct == 'eosio.stake':
+                # eosio.stake contains the net_weight/cup_weight of accounts so here just skip
+                continue
             conf_dict['sys_producer_amount'][acct] = get_sys_producer_balance_account(conf_dict['nodeosd_host'], acct, key)
+    return True
+
+def get_sys_account_servants(conf_dict):
+    for account_name in conf_dict['sys_accounts']:
+        ret = requests.post("http://%s/v1/history/get_controlled_accounts" % conf_dict['nodeosd_host'], data=json.dumps({'controlling_account':account_name}), timeout=2)
+        if ret.status_code/100 != 2:
+            print 'WARNING: failed to call get_controlled_accounts for:', account_name
+            return False
+        accounts = json.loads(ret.text)
+        if len(accounts['controlled_accounts'])>0:
+            conf_dict['eosio_descendant_account'] |= set(accounts['controlled_accounts'])
+    return True
+
+def get_eos_currency_stat(conf_dict):
+    ret = requests.post("http://%s/v1/chain/get_currency_stats" % conf_dict['nodeosd_host'], data=json.dumps({"json":True,"code":"eosio.token","symbol":conf_dict['token_name']}), timeout=2)
+    if ret.status_code/100 != 2:
+        print 'WARNING: failed to call get_currency_stats for EOS'
+        return False
+    eos_stats = json.loads(ret.text)
+    if not eos_stats or not eos_stats['EOS']:
+        print 'WARNING: get empty to call get_currency_stats for EOS'
+        return False
+    conf_dict['eos_stats'] = eos_stats['EOS']
+    return True
+
 
 ############################################
 #        Validate Onchain Balance          #
 ############################################
 def check_balance(conf_dict, process_pool, cpu_count):
     get_eosbios_account(conf_dict)
-    get_sys_producer_balances(conf_dict)
+
+    if not get_eos_currency_stat(conf_dict):
+        return False, 0
+
+    if not get_sys_producer_balances(conf_dict):
+        return False, 0
 
     node_host, snapshot_csv = conf_dict['nodeosd_host'], conf_dict['dlfiles']['snapshot.csv']
     account_onchain_balance_total, batch_size = Decimal(0.0), cpu_count*100
@@ -252,15 +295,13 @@ def check_balance(conf_dict, process_pool, cpu_count):
                     if signal_onchain_amount < 0:
                         return False, line_nu
                     account_onchain_balance_total += signal_onchain_amount
-            print 'Onchain: system&producer accounts balance details:', conf_dict['sys_producer_amount']
             sys_producer_balance = sum(conf_dict['sys_producer_amount'].values())
             print 'Onchain: system&producer accounts balance:',sys_producer_balance, 'common accounts balance:', account_onchain_balance_total, ' account number:', line_nu
             onchain_account_balance = sys_producer_balance + account_onchain_balance_total
 
-            conf_dict['eos_issued'] = Decimal(conf_dict['eos_issued'])+len(conf_dict['producer_names'])*Decimal(10000000.0000)
-            anonymous_amount = conf_dict['eos_issued'] - onchain_account_balance
+            anonymous_amount = token_str2float(conf_dict['eos_stats']['supply']) - onchain_account_balance
             if abs(anonymous_amount) > Decimal(0.0001):
-                print 'ERROR: There are some illegal transfer token action eos_issued(%s) != onchain_total(%s) anonymous amount:%s' % (conf_dict['eos_issued'], onchain_account_balance, anonymous_amount)
+                print 'ERROR: There are some illegal transfer token action eos_issued(%s) != onchain_total(%s) anonymous amount:%s' % (token_str2float(conf_dict['eos_stats']['supply']), onchain_account_balance, anonymous_amount)
                 return False, line_nu
             return True, line_nu
     except Exception as e:
