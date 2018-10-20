@@ -6,6 +6,7 @@
 
 from __future__ import unicode_literals
 import os
+import re
 import sys
 import uuid
 import time
@@ -16,6 +17,8 @@ import traceback
 import collections
 import hashlib
 import re
+from calendar import timegm
+from datetime import datetime
 from threading import Thread
 import simplejson as json
 from decimal import Decimal
@@ -33,10 +36,10 @@ def send_warning(msg, config_dict, sms_flag=False, telegram_flag=True):
     send_pagerduty_msg(msg, config_dict)
 
     if sms_flag:
-        send_mobile_msg(msg, config_dict)
+       send_mobile_msg(msg, config_dict)
     if telegram_flag:
         send_telegram_msg(msg, config_dict)
-
+    
 # Send Dingtalk
 def send_dingding_msg(msg, config_dict):
     headers = {
@@ -54,7 +57,7 @@ def send_dingding_msg(msg, config_dict):
         response = requests.post(url, data=json.dumps(content), headers=headers, params=querystring, timeout=3)
         print 'dingding send message:', msg #, response.text
     except Exception as e:
-        print 'get_current_bp get exception:', e
+        print 'send_dingding_msg get exception:', e
         print traceback.print_exc()
 
 # Send Telegram Bot
@@ -65,7 +68,7 @@ def send_telegram_msg(msg, config_dict):
         result = requests.post(url, param, timeout=5.0)
         print "telegram_alarm send message:", msg, result.text
     except Exception as e:
-        print 'get_current_bp get exception:', e
+        print 'send_telegram_msg get exception:', e
         print traceback.print_exc()
 
 # Send SMS
@@ -173,8 +176,13 @@ def second2_str24h(cur_second, fmt="%Y-%m-%d %H:%M:%S", utc=False):
         return time.strftime(fmt, time.localtime(cur_second))
     return time.strftime(fmt, time.gmtime(cur_second))
 
-def datestr24h_2second(date_str):
-    return int(time.mktime(time.strptime(date_str, "%Y-%m-%dT%H:%M:%S")))
+def datestr24h_2second(date_str, timezone="UTC"):
+    return timegm(
+        time.strptime(
+            date_str + timezone,
+            '%Y-%m-%dT%H:%M:%S%Z'
+        )
+    )
 
 def get_current_bp(host):
     try:
@@ -184,8 +192,7 @@ def get_current_bp(host):
         if ret.status_code/100 != 2:
             print 'ERROR: failed to call:', get_info, ret.text
             return None, 'get_current_bp failed:' + host
-        result = json.loads(ret.text)
-        return result, None
+        return json.loads(ret.text), None
     except Exception as e:
         print 'get_current_bp get exception:', e
         print traceback.print_exc()
@@ -218,7 +225,6 @@ def get_bp_rank(host):
             notify_users(msg, config_dict, sms_flag=True)
         return bps_rank, None
     except Exception as e:
-        #pass
         print 'get_bp_rank get exception:', e
         print traceback.print_exc()
     return None, 'get_bp_rank get exception:' + host
@@ -231,7 +237,18 @@ def get_block_producer(host, num):
                         headers={'User-Agent':"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/67.0.3396.99 Safari/537.36"})
         bpline = response.text[:64] + '}'
         print 'Get block %d :%s' % (num, bpline)
-        return json.loads(bpline), None
+        match_regxs = {
+            'producer' : '(?<=\"producer\":\")[^\",]*',
+            'timestamp' : '(?<=\"timestamp\":\")[^\",]*',
+            'schedule_version' : '(?<=\"schedule_version\":)[^,]*'
+        }
+        result = {}
+        for key in match_regxs:
+            ret = re.search(match_regxs[key], response.text)
+            if not ret:
+                return None, key + ' failed:' + host
+            result[key] = ret.group(0).strip()
+        return result, None
     except Exception as e:
         pass
         #print 'get_block_producer get exception:', e
@@ -251,27 +268,33 @@ def check_nextbp_legal(bp_rank, pre_bp, cur_bp):
 def check_bprank_change(pre_rank, cur_rank, config_dict):
     print pre_rank, '\n', cur_rank
     outrank_bps = set(pre_rank) - set(cur_rank)
+    rank_changed = False
     for bp in outrank_bps:
+        rank_changed = True
         msg = "%s out rank of %d" % (bp, len(cur_rank))
         notify_users(msg, config_dict, sms_flag=True)
 
     for index,bp in enumerate(cur_rank):
         if bp not in pre_rank:
+            rank_changed = True
             msg = "%s rank changed into %d" % (bp, index+1)
             notify_users(msg, config_dict, sms_flag=True)
             continue
         if cur_rank.index(bp) != pre_rank.index(bp):
+            rank_changed = True
             msg = "%s rank changed from %d to %d" % (bp, pre_rank.index(bp)+1, index+1)
             notify_users(msg, config_dict, sms_flag=True)
+    return rank_changed
 
 def check_rotating(host, status_dict, config_dict):
     global g_stop_thread
     if host not in status_dict:
         status_dict[host] = {'vote_rates_24h': collections.deque(maxlen=24), 'rank_last_2':collections.deque(maxlen=2), 'last_cblock_time':time.time()}
-
-    pre_bp, cur_bp, bp_rank = None, None, None
+   
+    pre_bp, cur_bp, bp_rank, pre_sch_ver, cur_sch_ver = None, None, None, 0, 0
     curbp_bcount, lib_num, cur_lib_num, start_lib_num = 0, 0, 0, 0
     rotate_time, pre_bprank = time.time(), None
+    ignore_timestamp = time.time() - 180
     while not g_stop_thread:
         try:
             curbp_info, err = get_current_bp(host)
@@ -292,9 +315,11 @@ def check_rotating(host, status_dict, config_dict):
                 notify_users(err, config_dict, sms_flag=False, telegram_flag=False)
                 rotate_time = time.time()
                 continue
-            cur_bp = block_bpinfo['producer']
+            cur_bp, cur_sch_ver = block_bpinfo['producer'], block_bpinfo['schedule_version']
             if not pre_bp:
                 pre_bp = cur_bp
+            if not pre_sch_ver:
+                pre_sch_ver = cur_sch_ver
             if pre_bp != cur_bp:
                 bp_rank, err = get_bp_rank(host)
                 if err:
@@ -303,21 +328,26 @@ def check_rotating(host, status_dict, config_dict):
                     continue
                 if not pre_bprank:
                     pre_bprank = bp_rank
-                check_bprank_change(pre_bprank, bp_rank, config_dict)
+                rank_changed = check_bprank_change(pre_bprank, bp_rank, config_dict)
                 pre_bprank = bp_rank
+                if pre_sch_ver != cur_sch_ver or rank_changed:
+                    print '21th bp rank changed:pre_sch_ver:%s cur_sch_ver:%s rank_changed:%s' % (pre_sch_ver, cur_sch_ver, rank_changed)
+                    ignore_timestamp = time.time() + 450
+                pre_sch_ver = cur_sch_ver
 
             cur_lib_num += 1
             if pre_bp == cur_bp:
                 curbp_bcount += 1
                 continue
-
-            legal, legal_bp = check_nextbp_legal(bp_rank, pre_bp, cur_bp)
-            if not legal:
-                msg = "%s MIGHT missed 12 blocks after %d" % (legal_bp, cur_lib_num-1)
+        
+            legal, legal_bp = check_nextbp_legal(bp_rank, pre_bp, cur_bp) 
+            cur_block_timestamp = datestr24h_2second(block_bpinfo['timestamp'][:-4]) 
+            if not legal and ignore_timestamp < cur_block_timestamp:
+                msg = "%s MIGHT miss 12 blocks after %d" % (legal_bp, cur_lib_num-1)
                 notify_users(msg, config_dict, sms_flag=True)
 
-            if curbp_bcount<11 and cur_lib_num-start_lib_num>11:
-                msg = "%s [%d - %d] missed %d blocks " % (pre_bp, cur_lib_num-1-curbp_bcount, cur_lib_num-2, 12-curbp_bcount)
+            if ignore_timestamp < cur_block_timestamp and curbp_bcount<11 and cur_lib_num-start_lib_num>11:
+                msg = "%s [%d - %d] missed %d blocks. Next is %s " % (pre_bp, cur_lib_num-1-curbp_bcount, cur_lib_num-2, 12-curbp_bcount, cur_bp)
                 notify_users(msg, config_dict, sms_flag=True)
             curbp_bcount = 1
             pre_bp = cur_bp
@@ -325,7 +355,7 @@ def check_rotating(host, status_dict, config_dict):
             print 'check_rotating get exception:', e
             print traceback.print_exc()
         finally:
-            sleep_time = 2.0 + rotate_time - time.time()
+            sleep_time = 1.0 + rotate_time - time.time()
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
